@@ -1,17 +1,20 @@
 # handlers.py
 from __future__ import annotations
 import re
+import logging
 from datetime import time as dtime
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import ConversationHandler, CallbackContext, ContextTypes
 
 from services import (
-    get_user, save_user, update_user_field, update_user,
+    get_user, save_user, update_user_field,
     save_lesson, ask_gemini, log_event,
     seed_review_item, get_due_reviews, update_review_result, progress_summary,
     generate_micro_lesson_json, generate_placement_questions, score_to_cefr
 )
+
+logger = logging.getLogger(__name__)
 
 # ---- States ----
 ASK_NAME, ASK_AGE, ASK_EMAIL, REG_LEVEL, REG_GOAL = range(5)
@@ -21,7 +24,6 @@ ASK_EXERCISE = 8
 REVIEW_ITEM = 9
 SETTINGS_FIELD, SETTINGS_VALUE = 10, 11
 PLACEMENT_Q = 20
-
 
 # ---- Keyboards ----
 def main_menu(is_registered: bool):
@@ -36,7 +38,6 @@ def main_menu(is_registered: bool):
         buttons = [["📋 ثبت‌نام"]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-
 def _quick_actions_menu(is_registered: bool):
     if is_registered:
         buttons = [
@@ -49,10 +50,8 @@ def _quick_actions_menu(is_registered: bool):
         buttons = [["📋 ثبت‌نام"], ["🧪 تعیین سطح"]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-
 def cancel_button():
     return ReplyKeyboardMarkup([["❌ لغو"]], resize_keyboard=True)
-
 
 def _placement_keyboard(options):
     if not options:
@@ -67,7 +66,6 @@ def _placement_keyboard(options):
     rows.append(["❌ لغو"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-
 def _render_question_dyn(item: dict, idx: int, total: int) -> str:
     title = f"سؤال {idx + 1}/{total}:\n\n"
     body = item.get("q", "")
@@ -81,23 +79,29 @@ def _render_question_dyn(item: dict, idx: int, total: int) -> str:
             txt += f"{chr(65 + i)}) {opt}\n"
     return txt
 
+# ---- Error Handler ----
+async def error_handler(update: object, context: CallbackContext) -> None:
+    logger.exception("Unhandled exception while handling update", exc_info=context.error)
+    try:
+        if update and getattr(update, "message", None):
+            await update.message.reply_text("⚠️ خطای موقتی رخ داد. لطفاً دوباره تلاش کن.")
+    except Exception:
+        pass
 
 # ---- Intro/Help/About ----
 def _intro_text():
     return (
         "👋 سلام!\n"
         "به ربات آموزش زبان انگلیسی خوش اومدی 🌱\n\n"
-        "✨ امکانات اصلی:\n"
-        "• 📚 «میکرولسن»‌های کوتاه و ساده، مخصوص سطح خودت\n"
-        "• 📝 تمرین‌های کوچک با فیدبک فوری\n"
-        "• 🔁 مرور هوشمند (SRS)\n"
-        "• ❓ بخش پرسش‌وپاسخ\n"
-        "• ⏰ یادآور روزانه\n"
-        "• 📊 پیگیری پیشرفت\n\n"
-        "🚀 شروع سریع:\n"
-        "1) «📋 ثبت‌نام»  2) «🧪 تعیین سطح»  3) «📚 شروع درس»"
+        "✨ امکانات:\n"
+        "• میکرولسن شخصی‌سازی‌شده\n"
+        "• فیدبک فوری\n"
+        "• مرور هوشمند (SRS)\n"
+        "• پرسش‌وپاسخ\n"
+        "• یادآور روزانه\n"
+        "• پیگیری پیشرفت\n\n"
+        "شروع سریع: 1) ثبت‌نام  2) تعیین سطح  3) شروع درس"
     )
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -105,37 +109,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_registered = bool(u)
     await update.message.reply_text(_intro_text(), reply_markup=_quick_actions_menu(is_registered))
     if not is_registered:
-        await update.message.reply_text("برای شروع سریع: «📋 ثبت‌نام» سپس «🧪 تعیین سطح» و بعد «📚 شروع درس».")
+        await update.message.reply_text("اول «📋 ثبت‌نام»، بعد «🧪 تعیین سطح»، سپس «📚 شروع درس».")
     else:
-        await update.message.reply_text(
-            "خوش برگشتی! با «📚 شروع درس» ادامه بده یا «🔁 مرور» آیتم‌های موعددار رو انجام بده.")
+        await update.message.reply_text("خوش برگشتی! با «📚 شروع درس» ادامه بده یا «🔁 مرور» رو بزن.")
 
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ از منوی پایین گزینه‌ات رو انتخاب کن.")
 
-
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ ربات یادگیری زبان انگلیسی با محتوای شخصی‌سازی‌شده و مرور هوشمند.")
-
+async def about(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ℹ️ ربات یادگیری انگلیسی با محتوای شخصی‌سازی‌شده و مرور هوشمند.")
 
 # ---- Register ----
-async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def register_start(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📝 نام خود را وارد کنید:", reply_markup=cancel_button())
     return ASK_NAME
-
 
 async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text
     await update.message.reply_text("📅 سن خود را وارد کنید:", reply_markup=cancel_button())
     return ASK_AGE
 
-
 async def register_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["age"] = update.message.text
     await update.message.reply_text("📧 ایمیل خود را وارد کنید:", reply_markup=cancel_button())
     return ASK_EMAIL
-
 
 async def register_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["email"] = update.message.text
@@ -149,13 +146,11 @@ async def register_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 حالا یک تعیین سطح کوتاه انجام می‌دیم.")
     return await placement_start(update, context)
 
-
 async def register_set_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["level"] = update.message.text
     await update.message.reply_text("🎯 هدف شما از یادگیری چیست؟ (Fun / Work / Travel ...)",
                                     reply_markup=cancel_button())
     return REG_GOAL
-
 
 async def register_set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["goal"] = update.message.text
@@ -164,19 +159,16 @@ async def register_set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ ثبت‌نام انجام شد!", reply_markup=main_menu(True))
     return ConversationHandler.END
 
-
 # ---- Edit Info ----
-async def edit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def edit_info(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✏️ کدام بخش را می‌خواهید ویرایش کنید؟ (name / age / email / level / goal)",
                                     reply_markup=cancel_button())
     return EDIT_FIELD
-
 
 async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["field"] = update.message.text
     await update.message.reply_text("🔄 مقدار جدید را وارد کنید:", reply_markup=cancel_button())
     return EDIT_VALUE
-
 
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     field = context.user_data["field"]
@@ -185,9 +177,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ بروزرسانی انجام شد!", reply_markup=main_menu(True))
     return ConversationHandler.END
 
-
 # ---- View Info ----
-async def view_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def view_info(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u:
         await update.message.reply_text("⚠️ ابتدا ثبت‌نام کنید.", reply_markup=main_menu(False))
@@ -202,27 +193,23 @@ async def view_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
-
 # ---- Q&A ----
-async def qa_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def qa_start(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ سوال خود را بنویسید:", reply_markup=cancel_button())
     return ASK_QUESTION
 
-
-async def qa_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def qa_answer(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     log_event(update.effective_user.id, "qa_asked", {"q": question})
-    answer = await ask_gemini(
-        f"Answer this English learning question in simple terms: {question}") or "Sorry, try again later."
+    answer = ask_gemini(f"Answer this English learning question in simple terms: {question}") or "Sorry, try again later."
     await update.message.reply_text(f"💡 پاسخ: {answer}", reply_markup=main_menu(True))
     return ConversationHandler.END
-
 
 # ---- Lesson ----
 def _render_lesson_from_json(j: dict) -> tuple[str, str]:
     parts = ["📌 واژگان:\n"]
     for v in (j.get("vocab") or [])[:3]:
-        line = f"- {v.get('word')} /{v.get('ipa', '')}/ = {v.get('meaning_fa', '')}\n  e.g. {v.get('example', '')}"
+        line = f"- {v.get('word')} /{v.get('ipa','')}/ = {v.get('meaning_fa','')}\n  e.g. {v.get('example','')}"
         parts.append(line)
     parts.append("\n🧩 جمله‌ها:\n")
     for s in (j.get("sentences") or []):
@@ -236,12 +223,11 @@ def _render_lesson_from_json(j: dict) -> tuple[str, str]:
     if first.get("type") == "mcq":
         t = f"{first['prompt']}\n"
         for i, opt in enumerate(first.get("options") or []):
-            t += f"{chr(65 + i)}) {opt}\n"
+            t += f"{chr(65+i)}) {opt}\n"
         exercise_text = "Exercise: " + t.strip()
     else:
         exercise_text = "Exercise: " + (first.get("prompt") or "")
     return content, exercise_text
-
 
 async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
@@ -267,11 +253,10 @@ async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if (ex0.get("type") == "listening") and ex0.get("media_url"):
         try:
             await update.message.reply_audio(audio=ex0["media_url"])
-        except:
+        except Exception:
             pass
     await update.message.reply_text(f"📝 {exercise}")
     return ASK_EXERCISE
-
 
 async def lesson_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.message.text
@@ -286,7 +271,7 @@ async def lesson_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Weakness hints: {', '.join(weaknesses)}\n"
         "Return one word: CORRECT or WRONG. Then a short reason (<=15 words) + a tiny tip."
     )
-    feedback = await ask_gemini(prompt) or ""
+    feedback = ask_gemini(prompt) or ""
     item_id = f"ex_{abs(hash(exercise))}"
     is_correct = "correct" in feedback.lower()
 
@@ -297,7 +282,6 @@ async def lesson_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     extra = f"\n(نوبت بعدی مرور: {stats.get('interval', 1)} روز دیگر)" if stats else ""
     await update.message.reply_text(f"🔎 فیدبک: {feedback}{extra}", reply_markup=main_menu(True))
     return ConversationHandler.END
-
 
 # ---- Review (SRS) ----
 async def review_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,7 +302,6 @@ async def review_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔁 مرور:\n\n{item['exercise']}", reply_markup=cancel_button())
     return REVIEW_ITEM
 
-
 async def review_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.message.text
     exercise = context.user_data.get("review_exercise")
@@ -330,7 +313,7 @@ async def review_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Student's answer: {answer}\n"
         "Return one word: CORRECT or WRONG. Then a short reason (<=15 words)."
     )
-    feedback = await ask_gemini(prompt) or ""
+    feedback = ask_gemini(prompt) or ""
     is_correct = "correct" in feedback.lower()
 
     stats = update_review_result(update.effective_user.id, item_id, is_correct)
@@ -341,9 +324,8 @@ async def review_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"{result}\n{feedback}{extra}", reply_markup=main_menu(True))
     return ConversationHandler.END
 
-
 # ---- Progress ----
-async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def progress(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u:
         await update.message.reply_text("⚠️ ابتدا ثبت‌نام کنید.", reply_markup=main_menu(False))
@@ -358,9 +340,8 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(txt, reply_markup=main_menu(True))
 
-
 # ---- Settings + Reminder ----
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def settings(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u:
         await update.message.reply_text("⚠️ ابتدا ثبت‌نام کنید.", reply_markup=main_menu(False))
@@ -373,7 +354,6 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=cancel_button()
     )
     return SETTINGS_FIELD
-
 
 async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -395,14 +375,12 @@ async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_user_field(uid, "reminder_time", text)
     update_user_field(uid, "reminder_enabled", True)
 
-    # حذف jobهای قبلی با همین نام
     for old in context.job_queue.get_jobs_by_name(f"reminder_{uid}"):
         old.schedule_removal()
 
-    # توجه: run_daily به وقت سرور/UTC است
     context.job_queue.run_daily(
         callback=send_daily_reminder,
-        time=dtime(hour=hh, minute=mm),
+        time=dtime(hour=hh, minute=mm),  # به وقت سرور/UTC
         chat_id=uid,
         name=f"reminder_{uid}",
     )
@@ -413,11 +391,9 @@ async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-
 async def send_daily_reminder(context: CallbackContext):
     chat_id = context.job.chat_id
     await context.bot.send_message(chat_id=chat_id, text="🕒 وقت درسه! روی /lesson بزن 😊")
-
 
 # ---- Placement (Dynamic) ----
 async def placement_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -443,11 +419,10 @@ async def placement_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if item.get("type") == "listening" and item.get("media_url"):
         try:
             await update.message.reply_audio(audio=item["media_url"])
-        except:
+        except Exception:
             pass
     await update.message.reply_text(_render_question_dyn(item, 0, len(qs)), reply_markup=kb)
     return PLACEMENT_Q
-
 
 async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -465,7 +440,6 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     item = qs[idx]
-    t = (item.get("type") or "").lower()
     options = item.get("options") or []
     correct = False
 
@@ -515,7 +489,7 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nxt.get("type") == "listening" and nxt.get("media_url"):
             try:
                 await update.message.reply_audio(audio=nxt["media_url"])
-            except:
+            except Exception:
                 pass
         await update.message.reply_text(_render_question_dyn(nxt, idx, len(qs)), reply_markup=kb)
         return PLACEMENT_Q
@@ -523,7 +497,7 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # پایان آزمون
     cefr = score_to_cefr(score, len(qs))
     update_user_field(update.effective_user.id, "cefr", cefr)
-    update_user_field(update.effective_user.id, "level", cefr)  # برای سازگاری با کدهای دیگر
+    update_user_field(update.effective_user.id, "level", cefr)
 
     sorted_weak = sorted(wrong_tags.items(), key=lambda kv: kv[1], reverse=True)
     top3 = [t for t, c in sorted_weak[:3]]
@@ -533,7 +507,7 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         log_event(update.effective_user.id, "placement_completed",
                   {"score": score, "total": len(qs), "cefr": cefr, "weak": top3})
-    except:
+    except Exception:
         pass
 
     weak_txt = ("ضعف‌ها: " + ", ".join(top3)) if top3 else "ضعف خاصی ثبت نشد."
@@ -547,8 +521,7 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-
 # ---- Cancel ----
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ عملیات لغو شد.", reply_markup=main_menu(True))
     return ConversationHandler.END

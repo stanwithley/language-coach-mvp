@@ -76,7 +76,7 @@ def log_event(user_id: int, name: str, data: Dict[str, Any]) -> None:
 # ---------- LLM (Gemini) ----------
 def ask_gemini(prompt: str, system: Optional[str]=None, json_mode: bool=False) -> Optional[str]:
     """
-    Wrapper ساده برای Gemini. اگر API key یا پکیج نبود → None.
+    Wrapper ساده برای Gemini (sync). اگر API key یا پکیج نبود → None.
     """
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -84,27 +84,24 @@ def ask_gemini(prompt: str, system: Optional[str]=None, json_mode: bool=False) -
     try:
         import google.generativeai as genai  # pip install google-generativeai
         genai.configure(api_key=api_key)
-        gclient = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         parts = []
         if system:
             parts.append({"role": "system", "parts": [system]})
         parts.append({"role": "user", "parts": [prompt]})
 
-        resp = gclient.generate_content(parts)
+        resp = model.generate_content(parts)
         text = (getattr(resp, "text", "") or "").strip()
         if not text:
             return None
-
         if json_mode:
-            # برداشتن بلوک JSON (اولین {...} یا [...])
             m = re.search(r"(\{.*\}|\[.*\])", text, re.S)
             return m.group(1) if m else text
         return text
     except ModuleNotFoundError:
         return None
     except Exception:
-        # می‌تونی اینجا logging اضافه کنی
         return None
 
 # ---------- CEFR Mapping ----------
@@ -129,7 +126,7 @@ def _validate_questions(payload: dict) -> List[dict]:
         elif t in ("fill", "dialog"):
             if not it.get("answer_text"):
                 continue
-        # listening/reading: یا options + answer_index یا answer_text
+        # listening/reading: می‌تواند options+answer_index یا answer_text داشته باشد
         out.append(it)
     return out[:10]
 

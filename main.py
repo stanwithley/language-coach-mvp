@@ -1,14 +1,14 @@
+# main.py
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
     filters,
-    JobQueue,  # برای یادآورها
+    JobQueue,
 )
 from config import BOT_TOKEN
 import handlers
-
 
 def main():
     app = Application.builder()\
@@ -23,12 +23,8 @@ def main():
             handlers.ASK_NAME: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.register_name)],
             handlers.ASK_AGE: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.register_age)],
             handlers.ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.register_email)],
-
-            # اگر مسیر قدیمی level/goal را نگه می‌داری
             handlers.REG_LEVEL: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.register_set_level)],
             handlers.REG_GOAL: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.register_set_goal)],
-
-            # 👇 خیلی مهم: state تعیین‌سطح داخل همین reg_conv
             handlers.PLACEMENT_Q: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.placement_answer)],
         },
         fallbacks=[MessageHandler(filters.Regex("^❌ لغو$"), handlers.cancel)],
@@ -60,9 +56,7 @@ def main():
     # --- Lesson conversation ---
     lesson_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^📚 شروع درس$"), handlers.lesson_start)],
-        states={
-            handlers.ASK_EXERCISE: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.lesson_answer)],
-        },
+        states={handlers.ASK_EXERCISE: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.lesson_answer)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ لغو$"), handlers.cancel)],
         name="lesson_conv",
         persistent=False,
@@ -71,9 +65,7 @@ def main():
     # --- Review conversation ---
     review_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^🔁 مرور$"), handlers.review_start)],
-        states={
-            handlers.REVIEW_ITEM: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.review_answer)],
-        },
+        states={handlers.REVIEW_ITEM: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.review_answer)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ لغو$"), handlers.cancel)],
         name="review_conv",
         persistent=False,
@@ -82,9 +74,7 @@ def main():
     # --- Settings conversation ---
     settings_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^⚙️ تنظیمات$"), handlers.settings)],
-        states={
-            handlers.SETTINGS_FIELD: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.settings_handle)],
-        },
+        states={handlers.SETTINGS_FIELD: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.settings_handle)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ لغو$"), handlers.cancel)],
         name="settings_conv",
         persistent=False,
@@ -93,9 +83,7 @@ def main():
     # --- Placement conversation ---
     placement_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^🧪 تعیین سطح$"), handlers.placement_start)],
-        states={
-            handlers.PLACEMENT_Q: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.placement_answer)]
-        },
+        states={handlers.PLACEMENT_Q: [MessageHandler(filters.TEXT & ~filters.Regex("^❌ لغو$"), handlers.placement_answer)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ لغو$"), handlers.cancel)],
         name="placement_conv",
         persistent=False,
@@ -122,6 +110,9 @@ def main():
     # main menu items
     app.add_handler(MessageHandler(filters.Regex("^📖 مشاهده اطلاعات$"), handlers.view_info))
     app.add_handler(MessageHandler(filters.Regex("^📊 پیشرفت$"), handlers.progress))
+
+    # --- Error handler ---
+    app.add_error_handler(handlers.error_handler)
 
     print("🤖 Bot is running...")
     app.run_polling()
