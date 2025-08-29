@@ -21,4 +21,4 @@
 - Google Generative AI (Gemini 1.5 Flash)
 - `python-dotenv` برای مدیریت متغیرهای محیطی
 
-## 📁 ساختار پروژه
+
