@@ -1,14 +1,16 @@
-from telegram.ext import ConversationHandler, CallbackContext
+# handlers.py
+from __future__ import annotations
+import re
 from datetime import time as dtime
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
+from telegram.ext import ConversationHandler, CallbackContext, ContextTypes
 
 from services import (
-    get_user, save_user, update_user_field,
-    save_lesson, ask_gemini,
-    log_event, seed_review_item, get_due_reviews,
-    update_review_result, progress_summary
+    get_user, save_user, update_user_field, update_user,
+    save_lesson, ask_gemini, log_event,
+    seed_review_item, get_due_reviews, update_review_result, progress_summary,
+    generate_micro_lesson_json, generate_placement_questions, score_to_cefr
 )
 
 # ---- States ----
@@ -19,57 +21,6 @@ ASK_EXERCISE = 8
 REVIEW_ITEM = 9
 SETTINGS_FIELD, SETTINGS_VALUE = 10, 11
 PLACEMENT_Q = 20
-
-# ---- Placement Questions (7 MCQ) ----
-PLACEMENT_QUESTIONS = [
-    {
-        "q": "Choose the correct article: ___ apple a day keeps the doctor away.",
-        "options": ["A", "An", "The", "No article"],
-        "answer": 1,
-        "tag": "grammar:articles"
-    },
-    {
-        "q": "Fill in the blank: I ____ coffee every morning.",
-        "options": ["drinks", "drink", "drank", "am drinking"],
-        "answer": 1,
-        "tag": "grammar:present-simple"
-    },
-    {
-        "q": "Choose the correct preposition: I’m interested ___ music.",
-        "options": ["on", "at", "in", "for"],
-        "answer": 2,
-        "tag": "grammar:prepositions"
-    },
-    {
-        "q": "Vocabulary: What does 'daily routine' mean?",
-        "options": ["A party", "Things you do every day", "An accident", "A holiday plan"],
-        "answer": 1,
-        "tag": "vocab:daily-life"
-    },
-    {
-        "q": "Choose the correct past form: She ____ to school yesterday.",
-        "options": ["go", "goes", "went", "going"],
-        "answer": 2,
-        "tag": "grammar:past-simple"
-    },
-    {
-        "q": "Reading: 'He rarely eats meat.' What does 'rarely' mean?",
-        "options": ["often", "never", "sometimes", "not often"],
-        "answer": 3,
-        "tag": "vocab:frequency"
-    },
-    {
-        "q": "Choose the correct sentence:",
-        "options": [
-            "She don't like tea.",
-            "She doesn't likes tea.",
-            "She doesn't like tea.",
-            "She not like tea."
-        ],
-        "answer": 2,
-        "tag": "grammar:aux-does"
-    },
-]
 
 
 # ---- Keyboards ----
@@ -86,51 +37,6 @@ def main_menu(is_registered: bool):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
-def cancel_button():
-    return ReplyKeyboardMarkup([["❌ لغو"]], resize_keyboard=True)
-
-
-def _placement_keyboard(options):
-    rows = []
-    for i, opt in enumerate(options):
-        label = f"{chr(65 + i)}) {opt}"
-        if i % 2 == 0:
-            rows.append([label])
-        else:
-            rows[-1].append(label)
-    rows.append(["❌ لغو"])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
-
-
-def _render_question(idx: int):
-    item = PLACEMENT_QUESTIONS[idx]
-    text = f"سؤال {idx + 1}/{len(PLACEMENT_QUESTIONS)}:\n\n{item['q']}\n"
-    for i, opt in enumerate(item["options"]):
-        text += f"{chr(65 + i)}) {opt}\n"
-    return text
-
-
-# ---- Commands ----
-
-def _intro_text():
-    return (
-        "👋 سلام!\n"
-        "به ربات آموزش زبان انگلیسی خوش اومدی 🌱\n\n"
-        "اینجا جاییه که می‌تونی بدون استرس و به صورت شخصی‌سازی شده زبانت رو تقویت کنی.\n\n"
-        "✨ امکانات اصلی:\n"
-        "• 📚 «میکرولسِن»‌های کوتاه و ساده، مخصوص سطح خودت\n"
-        "• 📝 تمرین‌های کوچک با **فیدبک فوری** (درست/غلط و دلیل)\n"
-        "• 🔁 مرور هوشمند (SRS) برای تثبیت مطالب در حافظه بلندمدت\n"
-        "• ❓ بخش پرسش‌وپاسخ برای هر سوالی در مسیر یادگیری\n"
-        "• ⏰ یادآور روزانه تا هیچ روزی تمرینت عقب نیفته\n"
-        "• 📊 پیگیری پیشرفت و انگیزه با نمودار و استریک\n\n"
-        "🚀 چطور شروع کنم؟\n"
-        "1. «📋 ثبت‌نام» رو بزن تا پروفایل آموزشی‌ات ساخته بشه.\n"
-        "2. با «🧪 تعیین سطح» جایگاه دقیق زبانت رو مشخص کن.\n"
-        "3. «📚 شروع درس» رو بزن و اولین درس رو دریافت کن."
-    )
-
-
 def _quick_actions_menu(is_registered: bool):
     if is_registered:
         buttons = [
@@ -144,40 +50,73 @@ def _quick_actions_menu(is_registered: bool):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # نمایش حالت تایپ برای حس طبیعی‌تر
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+def cancel_button():
+    return ReplyKeyboardMarkup([["❌ لغو"]], resize_keyboard=True)
 
-    u = get_user(update.effective_user.id)
-    is_registered = bool(u)
 
-    # پیام اصلی معرفی
-    await update.message.reply_text(
-        _intro_text(),
-        reply_markup=_quick_actions_menu(is_registered)
+def _placement_keyboard(options):
+    if not options:
+        return cancel_button()
+    rows = []
+    for i, opt in enumerate(options):
+        label = f"{chr(65 + i)}) {opt}"
+        if i % 2 == 0:
+            rows.append([label])
+        else:
+            rows[-1].append(label)
+    rows.append(["❌ لغو"])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def _render_question_dyn(item: dict, idx: int, total: int) -> str:
+    title = f"سؤال {idx + 1}/{total}:\n\n"
+    body = item.get("q", "")
+    t = (item.get("type") or "").lower()
+    txt = title + body + "\n"
+    if t in ("listening", "reading") and item.get("transcript"):
+        txt += f"\n(Passage/Transcript): {item['transcript']}\n"
+    opts = item.get("options") or []
+    if opts:
+        for i, opt in enumerate(opts):
+            txt += f"{chr(65 + i)}) {opt}\n"
+    return txt
+
+
+# ---- Intro/Help/About ----
+def _intro_text():
+    return (
+        "👋 سلام!\n"
+        "به ربات آموزش زبان انگلیسی خوش اومدی 🌱\n\n"
+        "✨ امکانات اصلی:\n"
+        "• 📚 «میکرولسن»‌های کوتاه و ساده، مخصوص سطح خودت\n"
+        "• 📝 تمرین‌های کوچک با فیدبک فوری\n"
+        "• 🔁 مرور هوشمند (SRS)\n"
+        "• ❓ بخش پرسش‌وپاسخ\n"
+        "• ⏰ یادآور روزانه\n"
+        "• 📊 پیگیری پیشرفت\n\n"
+        "🚀 شروع سریع:\n"
+        "1) «📋 ثبت‌نام»  2) «🧪 تعیین سطح»  3) «📚 شروع درس»"
     )
 
-    # پیام دوم با CTA متناسب با وضعیت کاربر
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    u = get_user(update.effective_user.id)
+    is_registered = bool(u)
+    await update.message.reply_text(_intro_text(), reply_markup=_quick_actions_menu(is_registered))
     if not is_registered:
-        await update.message.reply_text(
-            "برای شروع سریع:\n"
-            "• اول «📋 ثبت‌نام» رو انجام بده\n"
-            "• بعد «🧪 تعیین سطح» رو بزن\n"
-            "• آماده‌ای؟ «📚 شروع درس» 😎"
-        )
+        await update.message.reply_text("برای شروع سریع: «📋 ثبت‌نام» سپس «🧪 تعیین سطح» و بعد «📚 شروع درس».")
     else:
         await update.message.reply_text(
-            "خوش برگشتی! ✨\n"
-            "هر زمان آماده‌ای «📚 شروع درس» رو بزن یا با «🔁 مرور» آیتم‌های موعددار رو مرور کن."
-        )
+            "خوش برگشتی! با «📚 شروع درس» ادامه بده یا «🔁 مرور» آیتم‌های موعددار رو انجام بده.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❓ با منوی پایین می‌تونی عملیات رو انتخاب کنی.")
+    await update.message.reply_text("❓ از منوی پایین گزینه‌ات رو انتخاب کن.")
 
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ این ربات برای یادگیری زبان انگلیسی به صورت شخصی‌سازی شده ساخته شده.")
+    await update.message.reply_text("ℹ️ ربات یادگیری زبان انگلیسی با محتوای شخصی‌سازی‌شده و مرور هوشمند.")
 
 
 # ---- Register ----
@@ -200,25 +139,17 @@ async def register_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def register_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["email"] = update.message.text
-
-    # ⬇️ پروفایل موقت را همین‌جا ذخیره کن تا placement کار کند
-    save_user(
-        update.effective_user.id,
-        {
-            "name": context.user_data.get("name"),
-            "age": context.user_data.get("age"),
-            "email": context.user_data.get("email"),
-            # اختیاری: اگر goal/level بعداً تعیین می‌شود، خالی بگذار
-            "goal": context.user_data.get("goal"),
-            "level": context.user_data.get("level"),
-        },
-    )
-
+    save_user(update.effective_user.id, {
+        "name": context.user_data.get("name"),
+        "age": context.user_data.get("age"),
+        "email": context.user_data.get("email"),
+        "goal": context.user_data.get("goal"),
+        "level": context.user_data.get("level"),
+    })
     await update.message.reply_text("📊 حالا یک تعیین سطح کوتاه انجام می‌دیم.")
     return await placement_start(update, context)
 
 
-# اگر خواستی مسیر قدیمی level/goal را نگه داری:
 async def register_set_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["level"] = update.message.text
     await update.message.reply_text("🎯 هدف شما از یادگیری چیست؟ (Fun / Work / Travel ...)",
@@ -230,7 +161,7 @@ async def register_set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["goal"] = update.message.text
     save_user(update.effective_user.id, context.user_data)
     log_event(update.effective_user.id, "register_completed", {})
-    await update.message.reply_text("✅ ثبت‌نام با موفقیت انجام شد!", reply_markup=main_menu(True))
+    await update.message.reply_text("✅ ثبت‌نام انجام شد!", reply_markup=main_menu(True))
     return ConversationHandler.END
 
 
@@ -265,7 +196,7 @@ async def view_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 نام: {u.get('name')}\n"
         f"📅 سن: {u.get('age')}\n"
         f"📧 ایمیل: {u.get('email')}\n"
-        f"📊 سطح: {u.get('level')}\n"
+        f"📊 سطح: {u.get('level') or u.get('cefr')}\n"
         f"🎯 هدف: {u.get('goal')}\n"
         f"🧩 ضعف‌ها: {', '.join(u.get('weaknesses', [])) if u.get('weaknesses') else '—'}\n"
     )
@@ -281,40 +212,35 @@ async def qa_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def qa_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     log_event(update.effective_user.id, "qa_asked", {"q": question})
-    answer = await ask_gemini(f"Answer this English learning question in simple terms: {question}")
+    answer = await ask_gemini(
+        f"Answer this English learning question in simple terms: {question}") or "Sorry, try again later."
     await update.message.reply_text(f"💡 پاسخ: {answer}", reply_markup=main_menu(True))
     return ConversationHandler.END
 
 
 # ---- Lesson ----
-async def generate_micro_lesson(level: str, goal: str, weaknesses: list | None = None):
-    weak_hint = f"\nFocus on weaknesses: {', '.join(weaknesses)}" if weaknesses else ""
-    system = (
-        "Act as a friendly English teacher.\n"
-        f"Level: {level}\n"
-        f"Goal: {goal}{weak_hint}\n\n"
-        "Write a SHORT micro-lesson with:\n"
-        "- 3-4 simple sentences (topic appropriate for the student's level)\n"
-        "- Then add a line starting with: Exercise:\n"
-        "  - one tiny task (fill-in-the-blank OR short translation OR make-a-sentence)\n"
-        "Keep it concise. Avoid long outputs."
-    )
-    text = await ask_gemini(system)
+def _render_lesson_from_json(j: dict) -> tuple[str, str]:
+    parts = ["📌 واژگان:\n"]
+    for v in (j.get("vocab") or [])[:3]:
+        line = f"- {v.get('word')} /{v.get('ipa', '')}/ = {v.get('meaning_fa', '')}\n  e.g. {v.get('example', '')}"
+        parts.append(line)
+    parts.append("\n🧩 جمله‌ها:\n")
+    for s in (j.get("sentences") or []):
+        parts.append(f"- {s}")
+    content = "\n".join(parts).strip()
 
-    if not text or text.startswith("⚠️"):
-        lesson = (
-            "Today's phrase: \"Nice to meet you!\"\n"
-            "We use it when we meet someone for the first time.\n"
-            "Example: \"Hi, I'm Alex. Nice to meet you!\""
-        )
-        exercise = "Exercise: Write a greeting using 'Nice to meet you'."
-        return lesson, exercise
-
-    parts = text.split("Exercise:")
-    lesson_text = parts[0].strip()
-    exercise = "Exercise:" + parts[1].strip() if len(
-        parts) > 1 else "Exercise: Make one sentence using a new word from the lesson."
-    return lesson_text, exercise
+    ex = (j.get("exercises") or [])
+    if not ex:
+        return content, "Exercise: Make one sentence using a new word."
+    first = ex[0]
+    if first.get("type") == "mcq":
+        t = f"{first['prompt']}\n"
+        for i, opt in enumerate(first.get("options") or []):
+            t += f"{chr(65 + i)}) {opt}\n"
+        exercise_text = "Exercise: " + t.strip()
+    else:
+        exercise_text = "Exercise: " + (first.get("prompt") or "")
+    return content, exercise_text
 
 
 async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -324,17 +250,25 @@ async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text("📖 در حال ساخت درس شخصی‌سازی‌شده...")
-    level = u.get("level", "Beginner")
-    goal = u.get("goal", "Fun")
+    level = u.get("cefr") or u.get("level") or "A1"
+    goal = u.get("goal", "General")
     weaknesses = u.get("weaknesses", [])
-    lesson_text, exercise = await generate_micro_lesson(level, goal, weaknesses)
-    save_lesson(u["user_id"], lesson_text, exercise)
+
+    j = generate_micro_lesson_json(level, goal, weaknesses)
+    content, exercise = _render_lesson_from_json(j)
+    save_lesson(u["user_id"], content, exercise, json_payload=j)
 
     context.user_data["exercise"] = exercise
-    seed_review_item(u["user_id"], exercise)  # آیتم مرور برای تمرین همین درس
-    log_event(u["user_id"], "lesson_started", {})
+    seed_review_item(u["user_id"], exercise)
+    log_event(u["user_id"], "lesson_started", {"cefr": level})
 
-    await update.message.reply_text(f"✨ درس امروز:\n\n{lesson_text}")
+    await update.message.reply_text(f"✨ درس امروز:\n\n{content}")
+    ex0 = (j.get("exercises") or [None])[0] or {}
+    if (ex0.get("type") == "listening") and ex0.get("media_url"):
+        try:
+            await update.message.reply_audio(audio=ex0["media_url"])
+        except:
+            pass
     await update.message.reply_text(f"📝 {exercise}")
     return ASK_EXERCISE
 
@@ -342,24 +276,26 @@ async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def lesson_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.message.text
     exercise = context.user_data.get("exercise", "")
+    u = get_user(update.effective_user.id)
+    weaknesses = u.get("weaknesses", []) if u else []
 
     prompt = (
         f"You are an English teacher.\n"
-        f"Here is the exercise: {exercise}\n"
+        f"Exercise: {exercise}\n"
         f"Student's answer: {answer}\n"
-        "Return one word: CORRECT or WRONG. Then a short reason (<=15 words)."
+        f"Weakness hints: {', '.join(weaknesses)}\n"
+        "Return one word: CORRECT or WRONG. Then a short reason (<=15 words) + a tiny tip."
     )
-    feedback = await ask_gemini(prompt)
+    feedback = await ask_gemini(prompt) or ""
     item_id = f"ex_{abs(hash(exercise))}"
-    is_correct = "correct" in (feedback or "").lower()
+    is_correct = "correct" in feedback.lower()
 
     stats = update_review_result(update.effective_user.id, item_id, is_correct)
-    log_event(update.effective_user.id, "lesson_answered", {"correct": bool(is_correct)})
+    log_event(update.effective_user.id, "review_answered_correct" if is_correct else "review_answered_wrong", {})
 
     await update.message.reply_text(f"✅ جواب دریافت شد:\n\n{answer}")
     extra = f"\n(نوبت بعدی مرور: {stats.get('interval', 1)} روز دیگر)" if stats else ""
     await update.message.reply_text(f"🔎 فیدبک: {feedback}{extra}", reply_markup=main_menu(True))
-
     return ConversationHandler.END
 
 
@@ -394,11 +330,11 @@ async def review_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Student's answer: {answer}\n"
         "Return one word: CORRECT or WRONG. Then a short reason (<=15 words)."
     )
-    feedback = await ask_gemini(prompt)
-    is_correct = "correct" in (feedback or "").lower()
+    feedback = await ask_gemini(prompt) or ""
+    is_correct = "correct" in feedback.lower()
 
     stats = update_review_result(update.effective_user.id, item_id, is_correct)
-    log_event(update.effective_user.id, "review_answered", {"correct": bool(is_correct)})
+    log_event(update.effective_user.id, "review_answered_correct" if is_correct else "review_answered_wrong", {})
 
     result = "✅ درست" if is_correct else "❌ غلط"
     extra = f"\n(نوبت بعدی: {stats.get('interval', 1)} روز دیگر)" if stats else ""
@@ -449,7 +385,6 @@ async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏰ یادآور خاموش شد.", reply_markup=main_menu(True))
         return ConversationHandler.END
 
-    # HH:MM parsing
     try:
         hh, mm = map(int, text.split(":"))
         assert 0 <= hh < 24 and 0 <= mm < 60
@@ -464,7 +399,7 @@ async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for old in context.job_queue.get_jobs_by_name(f"reminder_{uid}"):
         old.schedule_removal()
 
-    # ثبت Job روزانه (به وقت سرور/UTC)
+    # توجه: run_daily به وقت سرور/UTC است
     context.job_queue.run_daily(
         callback=send_daily_reminder,
         time=dtime(hour=hh, minute=mm),
@@ -473,7 +408,7 @@ async def settings_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        f"✅ یادآور روزانه با موفقیت روی ساعت {text} تنظیم شد.",
+        f"✅ یادآور روزانه روی {text} تنظیم شد.",
         reply_markup=main_menu(True)
     )
     return ConversationHandler.END
@@ -484,21 +419,33 @@ async def send_daily_reminder(context: CallbackContext):
     await context.bot.send_message(chat_id=chat_id, text="🕒 وقت درسه! روی /lesson بزن 😊")
 
 
-# ---- Placement ----
+# ---- Placement (Dynamic) ----
 async def placement_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u:
         await update.message.reply_text("⚠️ ابتدا ثبت‌نام کنید.", reply_markup=main_menu(False))
         return ConversationHandler.END
 
+    level_hint = u.get("level") or u.get("cefr") or "Beginner"
+    qs = generate_placement_questions(level_hint)
+    if not qs:
+        await update.message.reply_text("⛔️ فعلاً نتوانستم سؤال‌های تعیین‌سطح بسازم. بعداً دوباره تلاش کن.")
+        return ConversationHandler.END
+
+    context.user_data["pl_qs"] = qs
     context.user_data["pl_idx"] = 0
     context.user_data["pl_score"] = 0
     context.user_data["pl_wrong_tags"] = {}
 
-    q = _render_question(0)
-    kb = _placement_keyboard(PLACEMENT_QUESTIONS[0]["options"])
-    await update.message.reply_text("🧪 تعیین سطح شروع شد. لطفاً گزینه‌ی درست را انتخاب کنید.")
-    await update.message.reply_text(q, reply_markup=kb)
+    item = qs[0]
+    kb = _placement_keyboard(item.get("options"))
+    await update.message.reply_text("🧪 تعیین‌سطح شروع شد. لطفاً پاسخ بده.")
+    if item.get("type") == "listening" and item.get("media_url"):
+        try:
+            await update.message.reply_audio(audio=item["media_url"])
+        except:
+            pass
+    await update.message.reply_text(_render_question_dyn(item, 0, len(qs)), reply_markup=kb)
     return PLACEMENT_Q
 
 
@@ -508,73 +455,94 @@ async def placement_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ تعیین سطح لغو شد.", reply_markup=main_menu(True))
         return ConversationHandler.END
 
+    qs = context.user_data.get("pl_qs", [])
     idx = context.user_data.get("pl_idx", 0)
     score = context.user_data.get("pl_score", 0)
     wrong_tags = context.user_data.get("pl_wrong_tags", {})
 
-    item = PLACEMENT_QUESTIONS[idx]
-    selected = None
-    if len(text) >= 1 and text[0].upper() in "ABCD":
-        selected = ord(text[0].upper()) - 65
+    if idx >= len(qs):
+        await update.message.reply_text("پایان آزمون.", reply_markup=main_menu(True))
+        return ConversationHandler.END
+
+    item = qs[idx]
+    t = (item.get("type") or "").lower()
+    options = item.get("options") or []
+    correct = False
+
+    if options:
+        selected = None
+        if len(text) >= 1 and text[0].upper() in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            pos = ord(text[0].upper()) - 65
+            if 0 <= pos < len(options):
+                selected = pos
+        if selected is None:
+            for i, opt in enumerate(options):
+                if text.lower() == (opt or "").lower():
+                    selected = i
+                    break
+        if selected is None:
+            await update.message.reply_text("⛔️ لطفاً یکی از گزینه‌ها را انتخاب کنید.")
+            kb = _placement_keyboard(options)
+            await update.message.reply_text(_render_question_dyn(item, idx, len(qs)), reply_markup=kb)
+            return PLACEMENT_Q
+        correct = (selected == item.get("answer_index"))
     else:
-        for i, opt in enumerate(item["options"]):
-            if text.lower() == opt.lower():
-                selected = i
-                break
+        ans = (item.get("answer_text") or "").strip().lower()
+        user_ans = text.strip().lower()
+        norm = lambda s: re.sub(r"[^a-z0-9 ']", "", s)
+        correct = norm(user_ans) == norm(ans)
 
-    if selected is None or not (0 <= selected < len(item["options"])):
-        await update.message.reply_text("⛔️ لطفاً یکی از گزینه‌ها را انتخاب کنید (A/B/C/D).")
-        q = _render_question(idx)
-        kb = _placement_keyboard(item["options"])
-        await update.message.reply_text(q, reply_markup=kb)
-        return PLACEMENT_Q
-
-    if selected == item["answer"]:
+    if correct:
         score += 1
         await update.message.reply_text("✅ درست!")
     else:
-        wrong_tags[item["tag"]] = wrong_tags.get(item["tag"], 0) + 1
-        correct_letter = chr(65 + item["answer"])
-        await update.message.reply_text(f"❌ غلط. پاسخ درست: {correct_letter}")
+        tag = item.get("tag") or "general"
+        wrong_tags[tag] = wrong_tags.get(tag, 0) + 1
+        if options and item.get("answer_index") is not None:
+            correct_letter = chr(65 + item["answer_index"])
+            await update.message.reply_text(f"❌ غلط. پاسخ درست: {correct_letter}")
+        elif item.get("answer_text"):
+            await update.message.reply_text(f"❌ غلط. پاسخ نمونه: {item['answer_text']}")
 
     idx += 1
-    if idx < len(PLACEMENT_QUESTIONS):
+    if idx < len(qs):
         context.user_data["pl_idx"] = idx
         context.user_data["pl_score"] = score
         context.user_data["pl_wrong_tags"] = wrong_tags
 
-        q = _render_question(idx)
-        kb = _placement_keyboard(PLACEMENT_QUESTIONS[idx]["options"])
-        await update.message.reply_text(q, reply_markup=kb)
+        nxt = qs[idx]
+        kb = _placement_keyboard(nxt.get("options"))
+        if nxt.get("type") == "listening" and nxt.get("media_url"):
+            try:
+                await update.message.reply_audio(audio=nxt["media_url"])
+            except:
+                pass
+        await update.message.reply_text(_render_question_dyn(nxt, idx, len(qs)), reply_markup=kb)
         return PLACEMENT_Q
 
-    # پایان آزمون – محاسبه سطح
-    if score <= 2:
-        level = "Beginner"
-    elif score <= 5:
-        level = "Intermediate"
-    else:
-        level = "Advanced"
+    # پایان آزمون
+    cefr = score_to_cefr(score, len(qs))
+    update_user_field(update.effective_user.id, "cefr", cefr)
+    update_user_field(update.effective_user.id, "level", cefr)  # برای سازگاری با کدهای دیگر
 
     sorted_weak = sorted(wrong_tags.items(), key=lambda kv: kv[1], reverse=True)
     top3 = [t for t, c in sorted_weak[:3]]
-
-    update_user_field(update.effective_user.id, "level", level)
     if top3:
         update_user_field(update.effective_user.id, "weaknesses", top3)
 
     try:
-        log_event(update.effective_user.id, "placement_completed", {"score": score, "level": level, "weak": top3})
+        log_event(update.effective_user.id, "placement_completed",
+                  {"score": score, "total": len(qs), "cefr": cefr, "weak": top3})
     except:
         pass
 
     weak_txt = ("ضعف‌ها: " + ", ".join(top3)) if top3 else "ضعف خاصی ثبت نشد."
     await update.message.reply_text(
         f"🏁 پایان تعیین سطح!\n"
-        f"امتیاز: {score}/{len(PLACEMENT_QUESTIONS)}\n"
-        f"سطح شما: {level}\n"
+        f"امتیاز: {score}/{len(qs)}\n"
+        f"سطح (CEFR): {cefr}\n"
         f"{weak_txt}\n\n"
-        f"حالا می‌تونی «📚 شروع درس» رو بزنی تا درس مناسب سطحت بیاد.",
+        f"حالا «📚 شروع درس» رو بزن تا درس مناسب سطحت بیاد.",
         reply_markup=main_menu(True)
     )
     return ConversationHandler.END
