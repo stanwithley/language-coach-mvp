@@ -1,12 +1,20 @@
 from pymongo import MongoClient, ASCENDING
 from datetime import datetime
 from config import MONGO_URI, DB_NAME
+from pymongo import MongoClient
+import os
+
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME", "language_coach")
+
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+users_col = db["users"]
+lessons_col = db["lessons"]
 
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
-users_col = db["users"]
-lessons_col = db["lessons"]
 
 # Indexes for performance (idempotent)
 users_col.create_index([("user_id", ASCENDING)], unique=True)
